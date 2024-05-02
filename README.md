@@ -1,7 +1,7 @@
-Our method is verified with: *Palette: Image-to-Image Diffusion Models* [(Original Paper)](https://arxiv.org/pdf/2111.05826.pdf). Our code is primarily built on [GitHub](https://github.com/Janspiry/Palette-Image-to-Image-Diffusion-Models).
+We modified this repo to reproduce the experiments for the paper <a href="https://openreview.net/pdf?id=9hjVoPWPnh">Machine Unlearning for Image-to-Image Generative Models</a> (ICLR 2024).
 
 
-You shall run the code in the current dir: `diffusion_models/`
+You shall run the code in the current dir: `i2i_Palette-Image-to-Image-Diffusion-Models/`
 
 # Setup
 
