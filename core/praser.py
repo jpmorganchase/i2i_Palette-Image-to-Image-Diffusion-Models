@@ -124,7 +124,17 @@ def parse(args):
         opt['name'] = '{}_{}'.format(opt['phase'], opt['name'])
 
     ''' set log directory '''
-    experiments_root = os.path.join(opt['path']['base_dir'], '{}_{}'.format(opt['name'], get_timestamp()))
+    # experiments_root = os.path.join(opt['path']['base_dir'], '{}_{}'.format(opt['name'], get_timestamp()))
+    if args.phase=='test':
+        experiments_root = args.ckpt.replace('.pth', '')
+    else:
+        if args.max_loss:
+            post_fix = '_max_loss'
+        else:
+            post_fix = '_min_loss'
+        experiments_root = os.path.join(opt['path']['base_dir'], '{}_learn_others_{}_fixdecoder_{}_falpha_{}_{}{}_learn_noise_{}'.format(opt['name'], args.learn_others, args.fix_decoder,args.forget_alpha, get_timestamp(), post_fix, args.learn_noise))
+    mkdirs(experiments_root)
+
     mkdirs(experiments_root)
 
     ''' save json '''
@@ -142,11 +152,11 @@ def parse(args):
         opt['train'].update(opt['debug'])
 
     ''' code backup ''' 
-    for name in os.listdir('.'):
-        if name in ['config', 'models', 'core', 'slurm', 'data']:
-            shutil.copytree(name, os.path.join(opt['path']['code'], name), ignore=shutil.ignore_patterns("*.pyc", "__pycache__"))
-        if '.py' in name or '.sh' in name:
-            shutil.copy(name, opt['path']['code'])
+    # for name in os.listdir('.'):
+    #     if name in ['config', 'models', 'core', 'slurm', 'data']:
+    #         shutil.copytree(name, os.path.join(opt['path']['code'], name), ignore=shutil.ignore_patterns("*.pyc", "__pycache__"))
+    #     if '.py' in name or '.sh' in name:
+    #         shutil.copy(name, opt['path']['code'])
     return dict_to_nonedict(opt)
 
 

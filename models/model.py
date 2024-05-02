@@ -81,21 +81,25 @@ class Palette(BaseModel):
             })
         return dict
 
-    def save_current_results(self):
+    def save_current_results(self, test=False):
+        if test:
+            mask_ratio = f'{self.phase_loader.dataset.mask_ratio:.2f}/'
+        else:
+            mask_ratio = ''
         ret_path = []
         ret_result = []
         for idx in range(self.batch_size):
-            ret_path.append('GT_{}'.format(self.path[idx]))
+            ret_path.append('{}GT_{}'.format(mask_ratio, self.path[idx]))
             ret_result.append(self.gt_image[idx].detach().float().cpu())
 
-            ret_path.append('Process_{}'.format(self.path[idx]))
+            ret_path.append('{}Process_{}'.format(mask_ratio, self.path[idx]))
             ret_result.append(self.visuals[idx::self.batch_size].detach().float().cpu())
             
-            ret_path.append('Out_{}'.format(self.path[idx]))
+            ret_path.append('{}Out_{}'.format(mask_ratio, self.path[idx]))
             ret_result.append(self.visuals[idx-self.batch_size].detach().float().cpu())
         
         if self.task in ['inpainting','uncropping']:
-            ret_path.extend(['Mask_{}'.format(name) for name in self.path])
+            ret_path.extend(['{}Mask_{}'.format(mask_ratio, name) for name in self.path])
             ret_result.extend(self.mask_image)
 
         self.results_dict = self.results_dict._replace(name=ret_path, result=ret_result)
@@ -128,11 +132,70 @@ class Palette(BaseModel):
             scheduler.step()
         return self.train_metrics.result()
     
+    def unlearn_step(self):
+        self.netG.train()
+        self.train_metrics.reset()
+        for train_data,labels in tqdm.tqdm(self.phase_loader):
+            self.set_input(train_data)
+            labels = labels.float()
+            labels = self.set_device(labels)
+            self.optG.zero_grad()
+            loss = self.netG(self.gt_image, self.cond_image, mask=self.mask, labels=labels)
+            loss.backward()
+            self.optG.step()
+
+            self.iter += self.batch_size
+            self.writer.set_iter(self.epoch, self.iter, phase='train')
+            self.train_metrics.update(self.loss_fn.__name__, loss.item())
+            if self.iter % self.opt['train']['log_iter'] == 0:
+                for key, value in self.train_metrics.result().items():
+                    self.logger.info('{:5s}: {}\t'.format(str(key), value))
+                    self.writer.add_scalar(key, value)
+                for key, value in self.get_current_visuals().items():
+                    self.writer.add_images(key, value)
+            if self.ema_scheduler is not None:
+                if self.iter > self.ema_scheduler['ema_start'] and self.iter % self.ema_scheduler['ema_iter'] == 0:
+                    self.EMA.update_model_average(self.netG_EMA, self.netG)
+
+        for scheduler in self.schedulers:
+            scheduler.step()
+        return self.train_metrics.result()
+    
+    def unlearn_step_fix_decoder(self):
+        self.netG.train()
+        self.train_metrics.reset()
+        for train_data,labels in tqdm.tqdm(self.phase_loader):
+            self.set_input(train_data)
+            labels = labels.float()
+            labels = self.set_device(labels)
+            self.optG.zero_grad()
+            loss = self.netG(self.gt_image, self.cond_image, mask=self.mask, labels=labels, fix_decoder=True)
+            loss.backward()
+            self.optG.step()
+
+            self.iter += self.batch_size
+            self.writer.set_iter(self.epoch, self.iter, phase='train')
+            self.train_metrics.update(self.loss_fn.__name__, loss.item())
+            if self.iter % self.opt['train']['log_iter'] == 0:
+                for key, value in self.train_metrics.result().items():
+                    self.logger.info('{:5s}: {}\t'.format(str(key), value))
+                    self.writer.add_scalar(key, value)
+                for key, value in self.get_current_visuals().items():
+                    self.writer.add_images(key, value)
+            if self.ema_scheduler is not None:
+                if self.iter > self.ema_scheduler['ema_start'] and self.iter % self.ema_scheduler['ema_iter'] == 0:
+                    self.EMA.update_model_average(self.netG_EMA, self.netG)
+
+        for scheduler in self.schedulers:
+            scheduler.step()
+        return self.train_metrics.result()
+    
+
     def val_step(self):
         self.netG.eval()
         self.val_metrics.reset()
         with torch.no_grad():
-            for val_data in tqdm.tqdm(self.val_loader):
+            for val_data, labels in tqdm.tqdm(self.val_loader):
                 self.set_input(val_data)
                 if self.opt['distributed']:
                     if self.task in ['inpainting','uncropping']:
@@ -165,7 +228,7 @@ class Palette(BaseModel):
         self.netG.eval()
         self.test_metrics.reset()
         with torch.no_grad():
-            for phase_data in tqdm.tqdm(self.phase_loader):
+            for phase_data, labels in tqdm.tqdm(self.phase_loader):
                 self.set_input(phase_data)
                 if self.opt['distributed']:
                     if self.task in ['inpainting','uncropping']:
@@ -189,7 +252,7 @@ class Palette(BaseModel):
                     self.writer.add_scalar(key, value)
                 for key, value in self.get_current_visuals(phase='test').items():
                     self.writer.add_images(key, value)
-                self.writer.save_images(self.save_current_results())
+                self.writer.save_images(self.save_current_results(test=True))
         
         test_log = self.test_metrics.result()
         ''' save logged informations into log dict ''' 

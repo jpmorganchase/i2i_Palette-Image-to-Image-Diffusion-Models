@@ -52,6 +52,15 @@ def main_worker(gpu, ngpus_per_node, opt):
         writer = phase_writer
     )
 
+    tmp_ckpt = torch.load(opt['ckpt'])
+    new_ckpt={}
+    for keyname in tmp_ckpt:
+        if not 'teacher_denoise_fn' in keyname:
+            new_ckpt['module.'+keyname] = tmp_ckpt[keyname]
+        # new_ckpt[''+keyname] = tmp_ckpt[keyname]
+    status = model.netG.load_state_dict(new_ckpt)
+    # print(model.netG)
+    print(status)
     phase_logger.info('Begin model {}.'.format(opt['phase']))
     try:
         if opt['phase'] == 'train':
@@ -70,11 +79,13 @@ if __name__ == '__main__':
     parser.add_argument('-gpu', '--gpu_ids', type=str, default=None)
     parser.add_argument('-d', '--debug', action='store_true')
     parser.add_argument('-P', '--port', default='21012', type=str)
+    parser.add_argument('--ckpt', required=True, type=str)
 
     ''' parser configs '''
     args = parser.parse_args()
     opt = Praser.parse(args)
-    
+    opt['ckpt']=args.ckpt
+
     ''' cuda devices '''
     gpu_str = ','.join(str(x) for x in opt['gpu_ids'])
     os.environ['CUDA_VISIBLE_DEVICES'] = gpu_str

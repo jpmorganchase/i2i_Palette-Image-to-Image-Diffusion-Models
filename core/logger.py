@@ -108,13 +108,17 @@ class VisualWriter():
         try:
             names = results['name']
             outputs = Util.postprocess(results['result'])
-            for i in range(len(names)): 
-                Image.fromarray(outputs[i]).save(os.path.join(result_path, names[i]))
+            for i in range(len(names)):
+                file_path = os.path.join(result_path, names[i])
+                if not os.path.exists(os.path.dirname(file_path)):
+                    os.makedirs(os.path.dirname(file_path))
+                Image.fromarray(outputs[i]).save(file_path)
         except:
             raise NotImplementedError('You must specify the context of name and result in save_current_results functions of model.')
 
     def close(self):
-        self.writer.close()
+        if self.writer is not None:
+            self.writer.close()
         print('Close the Tensorboard SummaryWriter.')
 
         

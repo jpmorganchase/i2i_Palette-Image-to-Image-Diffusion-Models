@@ -522,7 +522,7 @@ class UNet(nn.Module):
             zero_module(nn.Conv2d(input_ch, out_channel, 3, padding=1)),
         )
 
-    def forward(self, x, gammas):
+    def forward(self, x, gammas, return_feat=False):
         """
         Apply the model to an input batch.
         :param x: an [N x 2 x ...] Tensor of inputs (B&W)
@@ -538,6 +538,9 @@ class UNet(nn.Module):
             h = module(h, emb)
             hs.append(h)
         h = self.middle_block(h, emb)
+        if return_feat:
+            hs.append(h)
+            return hs
         for module in self.output_blocks:
             h = torch.cat([h, hs.pop()], dim=1)
             h = module(h, emb)

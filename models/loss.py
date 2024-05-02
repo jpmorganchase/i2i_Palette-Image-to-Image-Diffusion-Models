@@ -11,7 +11,7 @@ from torch.autograd import Variable
 #         return self.loss_fn(output, target)
 
 
-def mse_loss(output, target):
+def mse_loss(output, target,labels=1.0):
     return F.mse_loss(output, target)
 
     

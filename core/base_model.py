@@ -36,7 +36,7 @@ class BaseModel():
         self.results_dict = CustomResult([],[]) # {"name":[], "result":[]}
 
     def train(self):
-        while self.epoch <= self.opt['train']['n_epoch'] and self.iter <= self.opt['train']['n_iter']:
+        while self.epoch <= self.opt['train']['n_epoch']:# and self.iter <= self.opt['train']['n_iter']:
             self.epoch += 1
             if self.opt['distributed']:
                 ''' sets the epoch for this sampler. When :attr:`shuffle=True`, this ensures all replicas use a different random ordering for each epoch '''
@@ -65,6 +65,69 @@ class BaseModel():
                         self.logger.info('{:5s}: {}\t'.format(str(key), value))
                 self.logger.info("\n------------------------------Validation End------------------------------\n\n")
         self.logger.info('Number of Epochs has reached the limit, End.')
+
+    def unlearn(self):
+        while self.epoch <= self.opt['train']['n_epoch']:# and self.iter <= self.opt['train']['n_iter']:
+            self.epoch += 1
+            if self.opt['distributed']:
+                ''' sets the epoch for this sampler. When :attr:`shuffle=True`, this ensures all replicas use a different random ordering for each epoch '''
+                self.phase_loader.sampler.set_epoch(self.epoch) 
+
+            train_log = self.unlearn_step()
+
+            ''' save logged informations into log dict ''' 
+            train_log.update({'epoch': self.epoch, 'iters': self.iter})
+
+            ''' print logged informations to the screen and tensorboard ''' 
+            for key, value in train_log.items():
+                self.logger.info('{:5s}: {}\t'.format(str(key), value))
+            
+            if self.epoch % self.opt['train']['save_checkpoint_epoch'] == 0:
+                self.logger.info('Saving the self at the end of epoch {:.0f}'.format(self.epoch))
+                self.save_everything()
+
+            if self.epoch % self.opt['train']['val_epoch'] == 0:
+                self.logger.info("\n\n\n------------------------------Validation Start------------------------------")
+                if self.val_loader is None:
+                    self.logger.warning('Validation stop where dataloader is None, Skip it.')
+                else:
+                    val_log = self.val_step()
+                    for key, value in val_log.items():
+                        self.logger.info('{:5s}: {}\t'.format(str(key), value))
+                self.logger.info("\n------------------------------Validation End------------------------------\n\n")
+        self.logger.info('Number of Epochs has reached the limit, End.')
+
+    def unlearn_fix_decoder(self):
+        while self.epoch <= self.opt['train']['n_epoch']:# and self.iter <= self.opt['train']['n_iter']:
+            self.epoch += 1
+            if self.opt['distributed']:
+                ''' sets the epoch for this sampler. When :attr:`shuffle=True`, this ensures all replicas use a different random ordering for each epoch '''
+                self.phase_loader.sampler.set_epoch(self.epoch) 
+
+            train_log = self.unlearn_step_fix_decoder()
+
+            ''' save logged informations into log dict ''' 
+            train_log.update({'epoch': self.epoch, 'iters': self.iter})
+
+            ''' print logged informations to the screen and tensorboard ''' 
+            for key, value in train_log.items():
+                self.logger.info('{:5s}: {}\t'.format(str(key), value))
+            
+            if self.epoch % self.opt['train']['save_checkpoint_epoch'] == 0:
+                self.logger.info('Saving the self at the end of epoch {:.0f}'.format(self.epoch))
+                self.save_everything()
+
+            if self.epoch % self.opt['train']['val_epoch'] == 0:
+                self.logger.info("\n\n\n------------------------------Validation Start------------------------------")
+                if self.val_loader is None:
+                    self.logger.warning('Validation stop where dataloader is None, Skip it.')
+                else:
+                    val_log = self.val_step()
+                    for key, value in val_log.items():
+                        self.logger.info('{:5s}: {}\t'.format(str(key), value))
+                self.logger.info("\n------------------------------Validation End------------------------------\n\n")
+        self.logger.info('Number of Epochs has reached the limit, End.')
+
 
     def test(self):
         pass

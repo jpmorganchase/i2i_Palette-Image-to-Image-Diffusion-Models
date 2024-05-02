@@ -5,6 +5,9 @@ from functools import partial
 import numpy as np
 from tqdm import tqdm
 from core.base_network import BaseNetwork
+import torch.nn.functional as F
+
+
 class Network(BaseNetwork):
     def __init__(self, unet, beta_schedule, module_name='sr3', **kwargs):
         super(Network, self).__init__(**kwargs)
@@ -15,6 +18,11 @@ class Network(BaseNetwork):
         
         self.denoise_fn = UNet(**unet)
         self.beta_schedule = beta_schedule
+        self.forget_alpha = 0.25
+        self.max_loss = 0
+        self.learn_noise = 0
+        self.learn_others = 0
+
 
     def set_loss(self, loss_fn):
         self.loss_fn = loss_fn
@@ -70,12 +78,12 @@ class Network(BaseNetwork):
             y_0_hat=y_0_hat, y_t=y_t, t=t)
         return model_mean, posterior_log_variance
 
-    def q_sample(self, y_0, sample_gammas, noise=None):
+    def q_sample(self, y_0, sample_gammas, noise=None, labels=1.0):
         noise = default(noise, lambda: torch.randn_like(y_0))
-        return (
-            sample_gammas.sqrt() * y_0 +
-            (1 - sample_gammas).sqrt() * noise
-        )
+        # print(y_0.size(), y_0.size(), labels.size(), ( 1-(1-sample_gammas).sqrt() ), (1-sample_gammas).sqrt(), sample_gammas, labels)
+        noise_taret = sample_gammas.sqrt() * y_0 * (labels[:, None, None, None]+1.0)*0.5 + (1-sample_gammas).sqrt() * noise + ( 1-(1-sample_gammas).sqrt() ) * noise*(1.0-labels[:, None, None, None])*0.5
+        noise_taret_original = sample_gammas.sqrt() * y_0 +(1 - sample_gammas).sqrt() * noise # original
+        return (noise_taret), (noise_taret_original)
 
     @torch.no_grad()
     def p_sample(self, y_t, t, clip_denoised=True, y_cond=None):
@@ -102,7 +110,7 @@ class Network(BaseNetwork):
                 ret_arr = torch.cat([ret_arr, y_t], dim=0)
         return y_t, ret_arr
 
-    def forward(self, y_0, y_cond=None, mask=None, noise=None):
+    def forward(self, y_0, y_cond=None, mask=None, noise=None, labels=1.0, fix_decoder=False):
         # sampling from p(gammas)
         b, *_ = y_0.shape
         t = torch.randint(1, self.num_timesteps, (b,), device=y_0.device).long()
@@ -112,17 +120,104 @@ class Network(BaseNetwork):
         sample_gammas = sample_gammas.view(b, -1)
 
         noise = default(noise, lambda: torch.randn_like(y_0))
-        y_noisy = self.q_sample(
-            y_0=y_0, sample_gammas=sample_gammas.view(-1, 1, 1, 1), noise=noise)
+        y_noisy, y_noise_original = self.q_sample(
+            y_0=y_0, sample_gammas=sample_gammas.view(-1, 1, 1, 1), noise=noise, labels=labels)
 
-        if mask is not None:
-            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas)
-            loss = self.loss_fn(mask*noise, mask*noise_hat)
-        else:
-            noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy], dim=1), sample_gammas)
-            loss = self.loss_fn(noise, noise_hat)
+        # print('self.learn_others', self.learn_others)
+        if self.learn_others:
+            if mask is not None:
+                with torch.no_grad():
+                    teacher_feat = self.teacher_denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+                    tmp = labels>0
+                    retain_idx = tmp.nonzero().squeeze()
+                    # print(retain_idx, labels)
+                    num_retain = torch.sum((labels+1.0)*0.5).item()
+                    if num_retain>0:
+                        batchsize = labels.size()[0]
+                        num_repeat = math.ceil(batchsize/num_retain)
+                        updated_feat = torch.tile(teacher_feat[retain_idx], (num_repeat, 1,1,1))[:batchsize]
+                    else:
+                        updated_feat = torch.randn_like(teacher_feat)
+                    
+
+                noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+                loss = 0
+                # print('self.learn_noise==1.0 and self.max_loss==0.0', fix_decoder)
+                loss = self.weighted_others_loss(noise_hat, teacher_feat, updated_feat, labels)
+            else:
+                noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original], dim=1), sample_gammas)
+                loss = self.weighted_mse_loss(noise, noise_hat, labels)            
+        elif self.learn_noise==1.0 and self.max_loss==0.0:
+            if mask is not None:
+                if fix_decoder:
+                    with torch.no_grad():
+                        teacher_feat = self.teacher_denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                    noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                    loss = 0
+                    # print('self.learn_noise==1.0 and self.max_loss==0.0', fix_decoder)
+                    for i in range(len(noise_hat)):
+                        loss += self.weighted_mse_loss(noise_hat[i], teacher_feat[i], labels, use_noise=True)
+                else:
+                    # print('self.learn_noise==1.0 and self.max_loss==0.0', fix_decoder)
+                    noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+                    loss = self.weighted_mse_loss(mask*noise, mask*noise_hat, labels)
+                    # loss = self.loss_fn(mask*noise, mask*noise_hat)
+            else:
+                noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy], dim=1), sample_gammas)
+                loss = self.weighted_mse_loss(noise, noise_hat, labels)
+
+        elif self.learn_noise==0.0:
+            if self.max_loss==1.0:
+                if mask is not None:
+                    if fix_decoder:
+                        with torch.no_grad():
+                            teacher_feat = self.teacher_denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                        noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                        loss = 0
+                        for i in range(len(noise_hat)):
+                            loss += self.weighted_mse_loss(noise_hat[i], teacher_feat[i], labels)
+                    else:
+                        noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+                        loss = self.weighted_mse_loss(mask*noise, mask*noise_hat, labels)
+                        # loss = self.loss_fn(mask*noise, mask*noise_hat)
+                else:
+                    noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original], dim=1), sample_gammas)
+                    loss = self.weighted_mse_loss(noise, noise_hat, labels)
+            elif self.max_loss==0.0:
+                if mask is not None:
+                    # print('alfja;ldsfjsl;k')
+                    if fix_decoder:
+                        with torch.no_grad():
+                            teacher_feat = self.teacher_denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                        noise_hat = self.denoise_fn(torch.cat([y_cond, y_noise_original*mask+(1.-mask)*y_0], dim=1), sample_gammas, return_feat=True)
+                        loss = 0
+                        for i in range(len(noise_hat)):
+                            loss += self.weighted_mse_loss(noise_hat[i], teacher_feat[i], labels)
+                    else:
+                        noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy*mask+(1.-mask)*y_0], dim=1), sample_gammas)
+                        loss = self.weighted_mse_loss(mask*noise, mask*noise_hat, labels)
+                        # loss = self.loss_fn(mask*noise, mask*noise_hat)
+                else:
+                    noise_hat = self.denoise_fn(torch.cat([y_cond, y_noisy], dim=1), sample_gammas)
+                    loss = self.weighted_mse_loss(noise, noise_hat, labels)
+        
         return loss
 
+    def weighted_mse_loss(self, tensor1, tensor2, labels, use_noise=False):
+        # print((1-2.0*self.max_loss), labels)
+        # exit()
+        retain_loss = F.mse_loss(tensor1*(labels[:, None, None, None]+1.0)*0.5 , tensor2* (labels[:, None, None, None]+1.0)*0.5 ) 
+        if use_noise:
+            tensor2= torch.randn_like(tensor2)*torch.std(tensor2)+torch.mean(tensor2)
+        forget_loss = (1-2.0*self.max_loss)*F.mse_loss(tensor1*(1.0-labels[:, None, None, None])*0.5 , tensor2* (1.0-labels[:, None, None, None])*0.5 ) 
+        return retain_loss+self.forget_alpha*forget_loss
+
+    def weighted_others_loss(self, noise_hat, teacher_feat, updated_feat, labels, use_noise=False):
+        # print((1-2.0*self.max_loss), labels)
+        # exit()
+        retain_loss = F.mse_loss(noise_hat*(labels[:, None, None, None]+1.0)*0.5 , teacher_feat* (labels[:, None, None, None]+1.0)*0.5 ) 
+        forget_loss = (1-2.0*self.max_loss)*F.mse_loss(noise_hat*(1.0-labels[:, None, None, None])*0.5 , updated_feat* (1.0-labels[:, None, None, None])*0.5 ) 
+        return retain_loss+self.forget_alpha*forget_loss
 
 # gaussian diffusion trainer class
 def exists(x):
