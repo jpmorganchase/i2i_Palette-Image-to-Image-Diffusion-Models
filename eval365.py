@@ -1,7 +1,7 @@
 import os
 import glob
 import argparse
-from i2i_cleanfid import fid
+from cleanfid import fid
 from core.base_dataset import BaseDataset
 from models.metric import inception_score, inception_score_place365
 from torchvision import transforms as trn
